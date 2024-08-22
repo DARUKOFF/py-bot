@@ -1,11 +1,11 @@
 cfg = {
     
 #initialization
-	'token': '7444773857:AAGVjC_PXG83g9X31mKER0_zKu8cLQ-s_Go',
+	'token': 'token',
 	'name': 'MUIV_support_bot',
 	'dev_id': 0,
 	'teh_chat_id': -0,
-	'db_url': 'mongodb+srv://kiruhadar:REDZEd1202@cluster0.wahib.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
+	'db_url': 'db_url',
 	'db_name': 'db_muiv',
 
 
