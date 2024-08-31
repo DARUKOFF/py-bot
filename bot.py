@@ -21,11 +21,9 @@ dp = Dispatcher(storage=storage)
 # DB connect
 db_pool = None
 
-
 async def create_db_pool():
     global db_pool
     db_pool = await asyncpg.create_pool(DATABASE_URL)
-
 
 # FSM
 class RequestForm(StatesGroup):
@@ -33,7 +31,6 @@ class RequestForm(StatesGroup):
     waiting_for_name = State()
     waiting_for_phone = State()
     waiting_for_message = State()
-
 
 # /start command
 @dp.message(Command(commands=['start']))
@@ -45,13 +42,11 @@ async def send_welcome(message: types.Message):
     start_kb = InlineKeyboardMarkup(inline_keyboard=[start_buttons])
     await message.answer("Добро пожаловать! Выберите действие:", reply_markup=start_kb)
 
-
 # button answer
 @dp.callback_query(F.data.in_("about_us"))
 async def about_us(callback_query: types.CallbackQuery):
     await callback_query.answer()
     await callback_query.message.answer("Информация о разработчике: ... (тут ваш текст)")
-
 
 # create request 
 @dp.callback_query(F.data.in_("create_request"))
@@ -66,7 +61,6 @@ async def create_request(callback_query: types.CallbackQuery, state: FSMContext)
     await callback_query.message.answer("Выберите тип заявки:", reply_markup=request_kb)
     await state.set_state(RequestForm.waiting_for_request_type)
 
-
 # start to create new request
 @dp.message(RequestForm.waiting_for_request_type)
 async def ask_for_name(message: types.Message, state: FSMContext):
@@ -74,53 +68,87 @@ async def ask_for_name(message: types.Message, state: FSMContext):
     if request_type not in ["по документам", "по номеру", "по заявке"]:
         await message.answer("Пожалуйста, выберите один из предложенных типов заявок.")
         return
+
     await state.update_data(request_type=request_type)
+    
+    user_id = message.from_user.id
+    async with db_pool.acquire() as connection:
+        async with connection.transaction():
+            user_record = await connection.fetchrow(
+                "SELECT fio, phone FROM users_info WHERE user_id = $1",
+                user_id
+            )
+            
+            if user_record:
+                fio = user_record['fio']
+                phone = user_record['phone']
+                if fio and phone:
+                    await state.update_data(fio=fio, phone=phone)
+                    await message.answer(f"Привет, {fio}! Тел: {phone}. Напиши, пожалуйста, запрос.")
+                    await message.answer("Опишите вашу проблему:")
+                    await state.set_state(RequestForm.waiting_for_message)
+                    return
+
     await message.answer("Введите ваше ФИО:", reply_markup=ReplyKeyboardRemove())
     await state.set_state(RequestForm.waiting_for_name)
-
 
 # check name
 @dp.message(RequestForm.waiting_for_name)
 async def check_fio(message: types.Message, state: FSMContext):
     fio = message.text.strip()
+    user_id = message.from_user.id
     
     async with db_pool.acquire() as connection:
-        user_record = await connection.fetchrow(
-            "SELECT user_id FROM users_info WHERE fio = $1",
-            fio
-        )
-        
-        if user_record:
-            if user_record['user_id'] is not None:
-                await message.answer("Это ФИО уже используется другим пользователем. Пожалуйста, используйте другое ФИО.")
-                await state.clear()
-                return
+        async with connection.transaction():
+            user_record = await connection.fetchrow(
+                "SELECT user_id FROM users_info WHERE fio = $1",
+                fio
+            )
+            
+            if user_record:
+                if user_record['user_id'] is not None and user_record['user_id'] != user_id:
+                    await message.answer("Это ФИО уже используется другим пользователем. Пожалуйста, используйте другое ФИО.")
+                    await state.clear()
+                    return
+                elif user_record['user_id'] is None:
+                    await connection.execute(
+                        "UPDATE users_info SET user_id = $1 WHERE fio = $2",
+                        user_id, fio
+                    )
             else:
-                await connection.execute(
-                    "UPDATE users_info SET user_id = $1 WHERE fio = $2",
-                    message.from_user.id, fio
-                )
-        else:
-            await message.answer("ФИО не найдено в базе данных. Пожалуйста, убедитесь, что вы ввели корректное ФИО.")
-            await state.clear()
-            return
+                await message.answer("ФИО не найдено в базе данных. Пожалуйста, введите корректное ФИО:")
+                return
     
     await state.update_data(fio=fio)
     await message.answer("Введите ваш номер телефона:")
     await state.set_state(RequestForm.waiting_for_phone)
 
-
-# phone request
+# save phone and proceed to message
 @dp.message(RequestForm.waiting_for_phone)
 async def ask_for_message(message: types.Message, state: FSMContext):
     phone = message.text.strip()
+    user_data = await state.get_data()
+    fio = user_data.get('fio')
+    
+    if not fio:
+        await message.answer("ФИО не найдено в данных. Пожалуйста, начните процесс создания заявки заново.")
+        await state.clear()
+        return
+
+    user_id = message.from_user.id
+    
+    async with db_pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                "INSERT INTO users_info (user_id, fio, phone) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET phone = EXCLUDED.phone",
+                user_id, fio, phone
+            )
     
     await state.update_data(phone=phone)
     await message.answer("Опишите вашу проблему:")
     await state.set_state(RequestForm.waiting_for_message)
 
-
-# sent to operators chat and to db
+# save request to db and notify operators
 @dp.message(RequestForm.waiting_for_message)
 async def save_request(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
@@ -142,15 +170,16 @@ async def save_request(message: types.Message, state: FSMContext):
         return
     
     async with db_pool.acquire() as connection:
-        record = await connection.fetchrow(
-            f"""
-            INSERT INTO {table_name} (user_id, fio, phone, message)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id
-            """,
-            user_id, fio, phone, problem_description
-        )
-        request_id = record['id']
+        async with connection.transaction():
+            record = await connection.fetchrow(
+                f"""
+                INSERT INTO {table_name} (user_id, fio, phone, message, time_submitted)
+                VALUES ($1, $2, $3, $4, NOW())
+                RETURNING id
+                """,
+                user_id, fio, phone, problem_description
+            )
+            request_id = record['id']
     
     operator_message = await bot.send_message(
         OPERATORS_CHAT_ID, 
@@ -158,14 +187,14 @@ async def save_request(message: types.Message, state: FSMContext):
     )
     
     async with db_pool.acquire() as connection:
-        await connection.execute(
-            f"UPDATE {table_name} SET operator_message_id = $1 WHERE id = $2",
-            operator_message.message_id, request_id
-        )
+        async with connection.transaction():
+            await connection.execute(
+                f"UPDATE {table_name} SET operator_message_id = $1 WHERE id = $2",
+                operator_message.message_id, request_id
+            )
     
     await message.answer("Спасибо! Ваша заявка сохранена и отправлена операторам.")
     await state.clear()
-
 
 # operator answer to request
 @dp.message(F.chat.id == OPERATORS_CHAT_ID)
@@ -214,7 +243,7 @@ async def forward_operator_reply(message: types.Message):
 # start work
 async def on_startup():
     await create_db_pool()
-    logging.info("Database pool created.")
+    logging.info("Bot has started.")
 
 async def on_shutdown():
     await db_pool.close()
@@ -229,3 +258,6 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
+
+    
