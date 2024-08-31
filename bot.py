@@ -85,7 +85,7 @@ async def ask_for_name(message: types.Message, state: FSMContext):
                 if fio and phone:
                     await state.update_data(fio=fio, phone=phone)
                     await message.answer(f"Привет, {fio}! Тел: {phone}. Напиши, пожалуйста, запрос.")
-                    await message.answer("Опишите вашу проблему:")
+                    await message.answer("Опишите вашу проблему:", reply_markup=ReplyKeyboardRemove())
                     await state.set_state(RequestForm.waiting_for_message)
                     return
 
@@ -152,9 +152,9 @@ async def ask_for_message(message: types.Message, state: FSMContext):
 @dp.message(RequestForm.waiting_for_message)
 async def save_request(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
-    request_type = user_data['request_type']
-    fio = user_data['fio']
-    phone = user_data['phone']
+    request_type = user_data.get('request_type')
+    fio = user_data.get('fio')
+    phone = user_data.get('phone')
     problem_description = message.text.strip()
     user_id = message.from_user.id
     
@@ -193,11 +193,19 @@ async def save_request(message: types.Message, state: FSMContext):
                 operator_message.message_id, request_id
             )
     
-    await message.answer("Спасибо! Ваша заявка сохранена и отправлена операторам.")
+    await message.answer("Спасибо! Ваша заявка сохранена и отправлена операторам.\nЕсли у вас есть еще вопросы или запросы, вы можете создать новую заявку, нажав кнопку ниже.")
+    
+    start_buttons = [
+        InlineKeyboardButton(text="Создать новую заявку", callback_data="create_request")
+    ]
+    start_kb = InlineKeyboardMarkup(inline_keyboard=[start_buttons])
+    await message.answer("Выберите действие:", reply_markup=start_kb)
+    
     await state.clear()
 
+
 # operator answer to request
-@dp.message(F.chat.id == OPERATORS_CHAT_ID)
+@dp.message(F.chat.id == int(OPERATORS_CHAT_ID))
 async def forward_operator_reply(message: types.Message):
     logging.info(f"Received a message in the operators' chat: {message.text}")
 
