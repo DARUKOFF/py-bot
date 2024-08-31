@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
+from aiogram.utils import markdown as md
 from aiogram import F
 import asyncpg
 from config import BOT_TOKEN, DATABASE_URL, OPERATORS_CHAT_ID
@@ -204,7 +205,6 @@ async def save_request(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# operator answer to request
 @dp.message(F.chat.id == int(OPERATORS_CHAT_ID))
 async def forward_operator_reply(message: types.Message):
     logging.info(f"Received a message in the operators' chat: {message.text}")
@@ -244,6 +244,16 @@ async def forward_operator_reply(message: types.Message):
                 f"UPDATE {table_found} SET time_answered = NOW() WHERE id = $1",
                 request_id
             )
+        try:
+            await bot.set_message_reactions(
+                chat_id=OPERATORS_CHAT_ID,
+                message_id=message.reply_to_message.message_id,
+                reactions=[ReactionTypeEmoji(emoji='👍')]
+            )
+            logging.info("Added thumbs up reaction to the message.")
+        except Exception as e:
+            logging.error(f"Failed to add reaction: {e}")
+
     else:
         logging.warning(f"No corresponding user found for the operator's reply message ID {message.reply_to_message.message_id}")
 
