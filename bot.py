@@ -41,21 +41,21 @@ async def send_welcome(message: types.Message):
         InlineKeyboardButton(text="О нас", callback_data="about_us")
     ]
     start_kb = InlineKeyboardMarkup(inline_keyboard=[start_buttons])
-    await message.answer("Добро пожаловать! Выберите действие:", reply_markup=start_kb)
+    await message.answer("Приветствуем! Ты попал в техничсекую поддержку Московского Университета им. С.Ю. Витте! Здесь студенты обращаются с вопросами касаемо учебного процесса, подачи документов, оплаты и сроков сдачи работ (задолженностей). Актуальную информацию передаёт наш специалист, который находится на линии тех. поддержки. Просьба не спамить, и с уважением относиться к нашим сотрудникам и работе Телеграм-Бота. Добро пожаловать :D", reply_markup=start_kb)
 
 # button answer
 @dp.callback_query(F.data.in_("about_us"))
 async def about_us(callback_query: types.CallbackQuery):
     await callback_query.answer()
-    await callback_query.message.answer("Информация о разработчике: ... (тут ваш текст)")
+    await callback_query.message.answer("Московский Университет им. С. Ю. Витте предлагает вашему вниманию встроенного телеграм бота, который поможет вам оперативно получать ответы на свои вопросы от технического специалиста на другом конце провода. support bot MUIV - новый иструмент коммуникации студентов и сотрудников ВУЗа. Вы сможете легко и быстро решить свой вопрос по организационным моментам. А также вступив в нашу группу, получать расписания вашего факультета, и/или узнавать обо всех изменениях в расписании/оплате/появлении новых направлений ВУЗа. МУИВ - Московыский университет, ежегодно выпускающий квалифицированных специалистов по направлениям: - Информационные технологии - Психология - Реклама и Связь с общественностью - Экономика - Юриспруденция Спасибо, что вы с нами :D")
 
 # create request 
 @dp.callback_query(F.data.in_("create_request"))
 async def create_request(callback_query: types.CallbackQuery, state: FSMContext):
     request_buttons = [
         KeyboardButton(text="по документам"),
-        KeyboardButton(text="по номеру"),
-        KeyboardButton(text="по заявке")
+        KeyboardButton(text="по срокам"),
+        KeyboardButton(text="по оплате")
     ]
     request_kb = ReplyKeyboardMarkup(keyboard=[request_buttons], resize_keyboard=True)
     await callback_query.answer()
@@ -66,7 +66,7 @@ async def create_request(callback_query: types.CallbackQuery, state: FSMContext)
 @dp.message(RequestForm.waiting_for_request_type)
 async def ask_for_name(message: types.Message, state: FSMContext):
     request_type = message.text
-    if request_type not in ["по документам", "по номеру", "по заявке"]:
+    if request_type not in ["по документам", "по сроккам", "по оплате"]:
         await message.answer("Пожалуйста, выберите один из предложенных типов заявок.")
         return
 
