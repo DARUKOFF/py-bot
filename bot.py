@@ -6,7 +6,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
-from aiogram.utils import markdown as md
 from aiogram import F
 import asyncpg
 from config import BOT_TOKEN, DATABASE_URL, OPERATORS_CHAT_ID
@@ -31,7 +30,7 @@ class RequestForm(StatesGroup):
     waiting_for_request_type = State()
     waiting_for_name = State()
     waiting_for_phone = State()
-    waiting_for_message = State()
+    collecting_messages = State()  # New state for collecting messages
 
 # /start command
 @dp.message(Command(commands=['start']))
@@ -66,7 +65,7 @@ async def create_request(callback_query: types.CallbackQuery, state: FSMContext)
 @dp.message(RequestForm.waiting_for_request_type)
 async def ask_for_name(message: types.Message, state: FSMContext):
     request_type = message.text
-    if request_type not in ["по документам", "по сроккам", "по оплате"]:
+    if request_type not in ["по документам", "по срокам", "по оплате"]:
         await message.answer("Пожалуйста, выберите один из предложенных типов заявок.")
         return
 
@@ -87,7 +86,7 @@ async def ask_for_name(message: types.Message, state: FSMContext):
                     await state.update_data(fio=fio, phone=phone)
                     await message.answer(f"Привет, {fio}! Тел: {phone}. Напиши, пожалуйста, запрос.")
                     await message.answer("Опишите вашу проблему:", reply_markup=ReplyKeyboardRemove())
-                    await state.set_state(RequestForm.waiting_for_message)
+                    await state.set_state(RequestForm.collecting_messages)
                     return
 
     await message.answer("Введите ваше ФИО:", reply_markup=ReplyKeyboardRemove())
@@ -146,65 +145,113 @@ async def ask_for_message(message: types.Message, state: FSMContext):
             )
     
     await state.update_data(phone=phone)
-    await message.answer("Опишите вашу проблему:")
-    await state.set_state(RequestForm.waiting_for_message)
+    await message.answer("Опишите вашу проблему или отправьте файл/фото. Нажмите кнопку 'Отправить заявку', когда закончите, или 'Отменить заявку' чтобы отменить.")
+    await state.set_state(RequestForm.collecting_messages)
 
-# save request to db and notify operators
-@dp.message(RequestForm.waiting_for_message)
-async def save_request(message: types.Message, state: FSMContext):
+# collect all messages
+@dp.message(RequestForm.collecting_messages)
+async def collect_messages(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     request_type = user_data.get('request_type')
     fio = user_data.get('fio')
     phone = user_data.get('phone')
-    problem_description = message.text.strip()
     user_id = message.from_user.id
-    
-    if request_type == "по документам":
-        table_name = "requests_documents"
-    elif request_type == "по номеру":
-        table_name = "requests_number"
-    elif request_type == "по заявке":
-        table_name = "requests_request"
-    else:
-        await message.answer("Неизвестный тип заявки. Попробуйте снова.")
+
+    if message.text and message.text.lower() == "отправить заявку":
+        if request_type == "по документам":
+            table_name = "requests_documents"
+        elif request_type == "по срокам":
+            table_name = "requests_number"
+        elif request_type == "по оплате":
+            table_name = "requests_request"
+        else:
+            await message.answer("Неизвестный тип заявки. Попробуйте снова.")
+            await state.finish()
+            return
+
+        async with db_pool.acquire() as connection:
+            async with connection.transaction():
+                record = await connection.fetchrow(
+                    f"""
+                    INSERT INTO {table_name} (user_id, fio, phone, message, time_submitted)
+                    VALUES ($1, $2, $3, $4, NOW())
+                    RETURNING id
+                    """,
+                    user_id, fio, phone, ""
+                )
+                request_id = record['id']
+
+        operator_message = await bot.send_message(
+            OPERATORS_CHAT_ID, 
+            f"Новая заявка от пользователя {fio}.\nТип заявки: {request_type}\nТелефон: {phone}\n\nОтветьте на это сообщение, чтобы ответ был переслан пользователю."
+        )
+
+        async with db_pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    f"UPDATE {table_name} SET operator_message_id = $1 WHERE id = $2",
+                    operator_message.message_id, request_id
+                )
+
+        user_messages = user_data.get('messages', [])
+        for msg in user_messages:
+            if msg.get('type') == 'text':
+                await bot.forward_message(OPERATORS_CHAT_ID, message.chat.id, msg.get('message_id'))
+            elif msg.get('type') == 'photo':
+                await bot.send_photo(OPERATORS_CHAT_ID, msg.get('file_id'))
+            elif msg.get('type') == 'document':
+                await bot.send_document(OPERATORS_CHAT_ID, msg.get('file_id'))
+
+        await message.answer("Спасибо! Ваша заявка сохранена и отправлена операторам. Если у вас есть еще вопросы или запросы, вы можете создать новую заявку, нажав кнопку ниже.", reply_markup=ReplyKeyboardRemove())
+        
+        start_buttons = [
+            InlineKeyboardButton(text="Создать новую заявку", callback_data="create_request")
+        ]
+        start_kb = InlineKeyboardMarkup(inline_keyboard=[start_buttons])
+        await message.answer("Выберите действие:", reply_markup=start_kb)
+        
         await state.clear()
-        return
-    
-    async with db_pool.acquire() as connection:
-        async with connection.transaction():
-            record = await connection.fetchrow(
-                f"""
-                INSERT INTO {table_name} (user_id, fio, phone, message, time_submitted)
-                VALUES ($1, $2, $3, $4, NOW())
-                RETURNING id
-                """,
-                user_id, fio, phone, problem_description
-            )
-            request_id = record['id']
-    
-    operator_message = await bot.send_message(
-        OPERATORS_CHAT_ID, 
-        f"Новая заявка от пользователя {fio}.\nТип заявки: {request_type}\nТелефон: {phone}\nОписание проблемы: {problem_description}\n\nОтветьте на это сообщение, чтобы ответ был переслан пользователю."
-    )
-    
-    async with db_pool.acquire() as connection:
-        async with connection.transaction():
-            await connection.execute(
-                f"UPDATE {table_name} SET operator_message_id = $1 WHERE id = $2",
-                operator_message.message_id, request_id
-            )
-    
-    await message.answer("Спасибо! Ваша заявка сохранена и отправлена операторам.\nЕсли у вас есть еще вопросы или запросы, вы можете создать новую заявку, нажав кнопку ниже.")
-    
-    start_buttons = [
-        InlineKeyboardButton(text="Создать новую заявку", callback_data="create_request")
-    ]
-    start_kb = InlineKeyboardMarkup(inline_keyboard=[start_buttons])
-    await message.answer("Выберите действие:", reply_markup=start_kb)
-    
-    await state.clear()
 
+    elif message.text and message.text.lower() == "отменить заявку":
+        await message.answer("Создание заявки отменено.", reply_markup=start_kb)
+        await state.clear()
+    else:
+        user_data = await state.get_data()
+        messages = user_data.get('messages', [])
+        
+        if message.text:
+            message_data = {
+                'type': 'text',
+                'message_id': message.message_id
+            }
+        elif message.photo:
+            file_id = message.photo[-1].file_id
+            message_data = {
+                'type': 'photo',
+                'file_id': file_id
+            }
+        elif message.document:
+            file_id = message.document.file_id
+            message_data = {
+                'type': 'document',
+                'file_id': file_id
+            }
+        else:
+            message_data = {
+                'type': 'unknown'
+            }
 
+        messages.append(message_data)
+        await state.update_data(messages=messages)
+        accept_buttons = [
+            KeyboardButton(text="Отправить заявку"),
+            KeyboardButton(text="Отменить заявку")
+        ]
+        accept_kb = ReplyKeyboardMarkup(keyboard=[accept_buttons], resize_keyboard=True)
+        await message.answer("Ваше сообщение добавлено к заявке. Отправьте 'Отправить заявку', чтобы завершить или 'Отменить заявку', чтобы отменить.", reply_markup=accept_kb)
+         
+
+# forward operator reply to the user
 @dp.message(F.chat.id == int(OPERATORS_CHAT_ID))
 async def forward_operator_reply(message: types.Message):
     logging.info(f"Received a message in the operators' chat: {message.text}")
@@ -257,7 +304,6 @@ async def forward_operator_reply(message: types.Message):
     else:
         logging.warning(f"No corresponding user found for the operator's reply message ID {message.reply_to_message.message_id}")
 
-
 # start work
 async def on_startup():
     await create_db_pool()
@@ -276,6 +322,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
-    
