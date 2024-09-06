@@ -213,7 +213,12 @@ async def collect_messages(message: types.Message, state: FSMContext):
         await state.clear()
 
     elif message.text and message.text.lower() == "отменить заявку":
-        await message.answer("Создание заявки отменено.", reply_markup=start_kb)
+        start_buttons = [
+                InlineKeyboardButton(text="Создать новую заявку", callback_data="create_request")
+            ]
+        start_kb = InlineKeyboardMarkup(inline_keyboard=[start_buttons])
+        await message.answer("Создание заявки отменено.", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Нажмите на кнопку, чтобы создать новую заявку.", reply_markup=start_kb)
         await state.clear()
     else:
         user_data = await state.get_data()
